@@ -1,3 +1,12 @@
+provider "aws" {
+  region = "us-east-2"
+}
+
+provider "aws" {
+  alias  = "us-east-1"
+  region = "us-east-1"
+}
+
 terraform {
   required_version = "~> 0.12.31"
 
@@ -9,22 +18,32 @@ terraform {
   }
 }
 
-provider "aws" {
-  region = "us-east-2"
-}
-
-provider "aws" {
-  alias  = "us-east-1"
-  region = "us-east-1"
+locals {
+  parent_domain_name = "aws.bradandmarsha.com"
+  app_zone_name      = "app.${local.parent_domain_name}"
+  buckets_prefix     = "brad"
 }
 
 resource "aws_route53_zone" "parent_zone" {
-  name              = "aws.bradandmarsha.com"
+  name              = local.parent_domain_name
   delegation_set_id = "N03386422VXZJKGR4YO18"
 }
 
+resource "aws_route53_zone" "app_zone" {
+  name = local.app_zone_name
+}
+
+resource "aws_route53_record" "app_zone_delegation" {
+  allow_overwrite = true
+  name            = local.app_zone_name
+  ttl             = 300
+  type            = "NS"
+  zone_id         = aws_route53_zone.parent_zone.id
+  records         = aws_route53_zone.app_zone.name_servers
+}
+
 resource "aws_route53_record" "live" {
-  zone_id = aws_route53_zone.parent_zone.zone_id
+  zone_id = aws_route53_zone.app_zone.zone_id
   name    = "www"
   type    = "A"
   alias {
@@ -35,7 +54,7 @@ resource "aws_route53_record" "live" {
 }
 
 resource "aws_route53_record" "test" {
-  zone_id = aws_route53_zone.parent_zone.zone_id
+  zone_id = aws_route53_zone.app_zone.zone_id
   name    = "www-test"
   type    = "A"
   alias {
@@ -47,8 +66,8 @@ resource "aws_route53_record" "test" {
 
 resource "aws_acm_certificate" "cert" {
   provider                  = aws.us-east-1
-  domain_name               = "aws.bradandmarsha.com"
-  subject_alternative_names = ["*.aws.bradandmarsha.com"]
+  domain_name               = local.app_zone_name
+  subject_alternative_names = ["*.${local.app_zone_name}"]
   validation_method         = "DNS"
 
   lifecycle {
@@ -67,7 +86,7 @@ resource "aws_route53_record" "cert_validation" {
 
   name            = each.value.name
   type            = each.value.type
-  zone_id         = aws_route53_zone.parent_zone.zone_id
+  zone_id         = aws_route53_zone.app_zone.zone_id
   records         = [each.value.record]
   ttl             = 60
   allow_overwrite = true
@@ -79,8 +98,8 @@ resource "aws_acm_certificate_validation" "cert" {
   validation_record_fqdns = [for record in aws_route53_record.cert_validation : record.fqdn]
 }
 
-resource "aws_s3_bucket" "brad-web-bucket" {
-  bucket        = "brad-web-bucket"
+resource "aws_s3_bucket" "web-bucket" {
+  bucket        = "${local.buckets_prefix}-web-bucket"
   acl           = "public-read"
   force_destroy = true
   website {
@@ -90,7 +109,7 @@ resource "aws_s3_bucket" "brad-web-bucket" {
 }
 
 resource "aws_s3_bucket_object" "default-index-page" {
-  bucket        = aws_s3_bucket.brad-web-bucket.id
+  bucket        = aws_s3_bucket.web-bucket.id
   acl           = "public-read"
   force_destroy = true
   key           = "index.html"
@@ -101,7 +120,7 @@ resource "aws_s3_bucket_object" "default-index-page" {
 }
 
 resource "aws_s3_bucket_object" "blue-index-page" {
-  bucket        = aws_s3_bucket.brad-web-bucket.id
+  bucket        = aws_s3_bucket.web-bucket.id
   acl           = "public-read"
   force_destroy = true
   key           = "blue/index.html"
@@ -112,7 +131,7 @@ resource "aws_s3_bucket_object" "blue-index-page" {
 }
 
 resource "aws_s3_bucket_object" "green-index-page" {
-  bucket        = aws_s3_bucket.brad-web-bucket.id
+  bucket        = aws_s3_bucket.web-bucket.id
   acl           = "public-read"
   force_destroy = true
   key           = "green/index.html"
@@ -122,8 +141,8 @@ resource "aws_s3_bucket_object" "green-index-page" {
   etag = filemd5("files/web/green/index.html")
 }
 
-resource "aws_s3_bucket" "brad-static-content-bucket" {
-  bucket        = "brad-static-content-bucket"
+resource "aws_s3_bucket" "static-content-bucket" {
+  bucket        = "${local.buckets_prefix}-static-content-bucket"
   acl           = "public-read"
   force_destroy = true
   website {
@@ -133,7 +152,7 @@ resource "aws_s3_bucket" "brad-static-content-bucket" {
 }
 
 resource "aws_s3_bucket_object" "default-image" {
-  bucket        = aws_s3_bucket.brad-static-content-bucket.id
+  bucket        = aws_s3_bucket.static-content-bucket.id
   acl           = "public-read"
   force_destroy = true
   key           = "image.jpg"
@@ -144,7 +163,7 @@ resource "aws_s3_bucket_object" "default-image" {
 }
 
 resource "aws_s3_bucket_object" "blue-image" {
-  bucket        = aws_s3_bucket.brad-static-content-bucket.id
+  bucket        = aws_s3_bucket.static-content-bucket.id
   acl           = "public-read"
   force_destroy = true
   key           = "blue/image.jpg"
@@ -155,7 +174,7 @@ resource "aws_s3_bucket_object" "blue-image" {
 }
 
 resource "aws_s3_bucket_object" "green-image" {
-  bucket        = aws_s3_bucket.brad-static-content-bucket.id
+  bucket        = aws_s3_bucket.static-content-bucket.id
   acl           = "public-read"
   force_destroy = true
   key           = "green/image.jpg"
@@ -170,7 +189,7 @@ resource "aws_cloudfront_origin_access_identity" "cf-web" {
 
 resource "aws_cloudfront_distribution" "cf-web" {
   origin {
-    domain_name = aws_s3_bucket.brad-web-bucket.bucket_regional_domain_name
+    domain_name = aws_s3_bucket.web-bucket.bucket_regional_domain_name
     origin_id   = "defaultWebS3Origin"
 
     s3_origin_config {
@@ -181,7 +200,7 @@ resource "aws_cloudfront_distribution" "cf-web" {
   enabled             = true
   default_root_object = "index.html"
 
-  aliases = ["www.aws.bradandmarsha.com", "www-test.aws.bradandmarsha.com"]
+  aliases = ["www.${local.app_zone_name}", "www-test.${local.app_zone_name}"]
 
   default_cache_behavior {
     allowed_methods  = ["GET", "HEAD", "OPTIONS"]
@@ -201,6 +220,9 @@ resource "aws_cloudfront_distribution" "cf-web" {
     max_ttl                = 86400
     viewer_protocol_policy = "allow-all"
 
+    # Note when using lambda functions on the edge like this, Terraform will fail
+    # to remove them until a few hours after the Cloudfront or associations are
+    # deleted.  See https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/lambda-edge-delete-replicas.html
     lambda_function_association {
       event_type   = "viewer-request"
       lambda_arn   = aws_lambda_function.blue-green-viewer-request-edge.qualified_arn
@@ -297,14 +319,6 @@ resource "aws_lambda_function" "blue-green-viewer-request-edge" {
   publish          = true
 }
 
-resource "aws_lambda_permission" "allow-cloudfront-blue-green-viewer-request-edge" {
-  provider      = aws.us-east-1
-  statement_id  = "AllowExecutionFromCloudFront"
-  action        = "lambda:GetFunction"
-  function_name = aws_lambda_function.blue-green-viewer-request-edge.function_name
-  principal     = "edgelambda.amazonaws.com"
-}
-
 data "archive_file" "blue-green-origin-request-edge-lambda" {
   type        = "zip"
   source_dir  = "files/lambdas/blue_green_origin_request_edge"
@@ -320,12 +334,4 @@ resource "aws_lambda_function" "blue-green-origin-request-edge" {
   source_code_hash = filebase64sha256("${data.archive_file.blue-green-origin-request-edge-lambda.output_path}")
   runtime          = "python3.8"
   publish          = true
-}
-
-resource "aws_lambda_permission" "allow-cloudfront-blue-green-origin-request-edge" {
-  provider      = aws.us-east-1
-  statement_id  = "AllowExecutionFromCloudFront"
-  action        = "lambda:GetFunction"
-  function_name = aws_lambda_function.blue-green-origin-request-edge.function_name
-  principal     = "edgelambda.amazonaws.com"
 }
