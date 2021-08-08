@@ -132,6 +132,17 @@ resource "aws_s3_bucket" "brad-static-content-bucket" {
   }
 }
 
+resource "aws_s3_bucket_object" "default-image" {
+  bucket        = aws_s3_bucket.brad-static-content-bucket.id
+  acl           = "public-read"
+  force_destroy = true
+  key           = "image.jpg"
+  source        = "files/static_content/image.jpg"
+  content_type  = "image/jpeg"
+
+  etag = filemd5("files/static_content/image.jpg")
+}
+
 resource "aws_s3_bucket_object" "blue-image" {
   bucket        = aws_s3_bucket.brad-static-content-bucket.id
   acl           = "public-read"
@@ -199,7 +210,7 @@ resource "aws_cloudfront_distribution" "cf-web" {
 
     forwarded_values {
       query_string = false
-
+      headers      = ["x-blue-green-context"]
       cookies {
         forward = "none"
       }
@@ -209,6 +220,18 @@ resource "aws_cloudfront_distribution" "cf-web" {
     default_ttl            = 3600
     max_ttl                = 86400
     viewer_protocol_policy = "allow-all"
+
+    lambda_function_association {
+      event_type   = "viewer-request"
+      lambda_arn   = aws_lambda_function.blue-green-viewer-request-edge.qualified_arn
+      include_body = false
+    }
+
+    lambda_function_association {
+      event_type   = "origin-request"
+      lambda_arn   = aws_lambda_function.blue-green-origin-request-edge.qualified_arn
+      include_body = false
+    }
   }
 
   restrictions {
@@ -222,4 +245,107 @@ resource "aws_cloudfront_distribution" "cf-web" {
     acm_certificate_arn = aws_acm_certificate.cert.arn
     ssl_support_method  = "sni-only"
   }
+}
+
+data "aws_iam_policy_document" "lambda-assume-role-policy" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+    principals {
+      type = "Service"
+      identifiers = [
+        "edgelambda.amazonaws.com",
+        "lambda.amazonaws.com"
+      ]
+    }
+  }
+}
+
+data "aws_iam_policy_document" "lambda-execution-policy" {
+  statement {
+    sid    = "CloudwatchLogs"
+    effect = "Allow"
+    actions = [
+      "logs:CreateLogGroup",
+      "logs:CreateLogStream",
+      "logs:PutLogEvents"
+    ]
+    resources = ["*"]
+  }
+  statement {
+    sid    = "EdgeCloudfront"
+    effect = "Allow"
+    actions = [
+      "lambda:GetFunction",
+      "lambda:EnableReplication*",
+      "iam:CreateServiceLinkedRole",
+      "cloudfront:UpdateDistribution "
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_policy" "lambda-execution-policy" {
+  name   = "lambda-execution-policy"
+  policy = data.aws_iam_policy_document.lambda-execution-policy.json
+}
+
+resource "aws_iam_role" "blue-green-edge-lambdas" {
+  name               = "blue-green-edge-lambdas"
+  assume_role_policy = data.aws_iam_policy_document.lambda-assume-role-policy.json
+}
+
+resource "aws_iam_role_policy_attachment" "blue-green-viewer-request-edge-lambda-cloudwatch" {
+  role       = aws_iam_role.blue-green-edge-lambdas.name
+  policy_arn = aws_iam_policy.lambda-execution-policy.arn
+}
+
+data "archive_file" "blue-green-viewer-request-edge-lambda" {
+  type        = "zip"
+  source_dir  = "files/lambdas/blue_green_viewer_request_edge"
+  output_path = "${path.module}/blue_green_viewer_request_edge_lambda.zip"
+}
+
+resource "aws_lambda_function" "blue-green-viewer-request-edge" {
+  provider         = aws.us-east-1
+  function_name    = "blue-green-viewer-request-edge"
+  role             = aws_iam_role.blue-green-edge-lambdas.arn
+  handler          = "lambda.lambda_handler"
+  filename         = data.archive_file.blue-green-viewer-request-edge-lambda.output_path
+  source_code_hash = filebase64sha256("${data.archive_file.blue-green-viewer-request-edge-lambda.output_path}")
+  runtime          = "python3.8"
+  publish          = true
+}
+
+resource "aws_lambda_permission" "allow-cloudfront-blue-green-viewer-request-edge" {
+  provider      = aws.us-east-1
+  statement_id  = "AllowExecutionFromCloudFront"
+  action        = "lambda:GetFunction"
+  function_name = aws_lambda_function.blue-green-viewer-request-edge.function_name
+  principal     = "edgelambda.amazonaws.com"
+}
+
+data "archive_file" "blue-green-origin-request-edge-lambda" {
+  type        = "zip"
+  source_dir  = "files/lambdas/blue_green_origin_request_edge"
+  output_path = "${path.module}/blue_green_origin_request_edge_lambda.zip"
+}
+
+resource "aws_lambda_function" "blue-green-origin-request-edge" {
+  provider         = aws.us-east-1
+  function_name    = "blue-green-origin-request-edge"
+  role             = aws_iam_role.blue-green-edge-lambdas.arn
+  handler          = "lambda.lambda_handler"
+  filename         = data.archive_file.blue-green-origin-request-edge-lambda.output_path
+  source_code_hash = filebase64sha256("${data.archive_file.blue-green-origin-request-edge-lambda.output_path}")
+  runtime          = "python3.8"
+  publish          = true
+}
+
+resource "aws_lambda_permission" "allow-cloudfront-blue-green-origin-request-edge" {
+  provider      = aws.us-east-1
+  statement_id  = "AllowExecutionFromCloudFront"
+  action        = "lambda:GetFunction"
+  function_name = aws_lambda_function.blue-green-origin-request-edge.function_name
+  principal     = "edgelambda.amazonaws.com"
 }
