@@ -42,7 +42,7 @@ resource "aws_route53_record" "app_zone_delegation" {
   records         = aws_route53_zone.app_zone.name_servers
 }
 
-resource "aws_route53_record" "live" {
+resource "aws_route53_record" "live-web" {
   zone_id = aws_route53_zone.app_zone.zone_id
   name    = "www"
   type    = "A"
@@ -53,13 +53,35 @@ resource "aws_route53_record" "live" {
   }
 }
 
-resource "aws_route53_record" "test" {
+resource "aws_route53_record" "test-web" {
   zone_id = aws_route53_zone.app_zone.zone_id
   name    = "www-test"
   type    = "A"
   alias {
     name                   = aws_cloudfront_distribution.cf-web.domain_name
     zone_id                = aws_cloudfront_distribution.cf-web.hosted_zone_id
+    evaluate_target_health = true
+  }
+}
+
+resource "aws_route53_record" "live-static-content" {
+  zone_id = aws_route53_zone.app_zone.zone_id
+  name    = "static-content"
+  type    = "A"
+  alias {
+    name                   = aws_cloudfront_distribution.cf-static-content.domain_name
+    zone_id                = aws_cloudfront_distribution.cf-static-content.hosted_zone_id
+    evaluate_target_health = true
+  }
+}
+
+resource "aws_route53_record" "test-static-content" {
+  zone_id = aws_route53_zone.app_zone.zone_id
+  name    = "static-content-test"
+  type    = "A"
+  alias {
+    name                   = aws_cloudfront_distribution.cf-static-content.domain_name
+    zone_id                = aws_cloudfront_distribution.cf-static-content.hosted_zone_id
     evaluate_target_health = true
   }
 }
@@ -113,7 +135,7 @@ resource "aws_s3_bucket_object" "default-index-page" {
   acl           = "public-read"
   force_destroy = true
   key           = "index.html"
-  content       = templatefile("files/web/index.html", { buckets_prefix = local.buckets_prefix })
+  content       = templatefile("files/web/index.html", { static_content_domain = "static-content.${local.app_zone_name}" })
   content_type  = "text/html"
 }
 
@@ -122,7 +144,7 @@ resource "aws_s3_bucket_object" "blue-index-page" {
   acl           = "public-read"
   force_destroy = true
   key           = "blue/index.html"
-  content       = templatefile("files/web/blue/index.html", { buckets_prefix = local.buckets_prefix })
+  content       = templatefile("files/web/blue/index.html", { static_content_domain = "static-content.${local.app_zone_name}" })
   content_type  = "text/html"
 }
 
@@ -131,7 +153,7 @@ resource "aws_s3_bucket_object" "green-index-page" {
   acl           = "public-read"
   force_destroy = true
   key           = "green/index.html"
-  content       = templatefile("files/web/green/index.html", { buckets_prefix = local.buckets_prefix })
+  content       = templatefile("files/web/green/index.html", { static_content_domain = "static-content.${local.app_zone_name}" })
   content_type  = "text/html"
 }
 
@@ -200,6 +222,71 @@ resource "aws_cloudfront_distribution" "cf-web" {
     allowed_methods  = ["GET", "HEAD", "OPTIONS"]
     cached_methods   = ["GET", "HEAD"]
     target_origin_id = "defaultWebS3Origin"
+
+    forwarded_values {
+      query_string = false
+      headers      = ["x-blue-green-context"]
+      cookies {
+        forward = "none"
+      }
+    }
+
+    min_ttl                = 0
+    default_ttl            = 3600
+    max_ttl                = 86400
+    viewer_protocol_policy = "allow-all"
+
+    # Note when using lambda functions on the edge like this, Terraform will fail
+    # to remove them until a few hours after the Cloudfront or associations are
+    # deleted.  See https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/lambda-edge-delete-replicas.html
+    lambda_function_association {
+      event_type   = "viewer-request"
+      lambda_arn   = aws_lambda_function.blue-green-viewer-request-edge.qualified_arn
+      include_body = false
+    }
+
+    lambda_function_association {
+      event_type   = "origin-request"
+      lambda_arn   = aws_lambda_function.blue-green-origin-request-edge.qualified_arn
+      include_body = false
+    }
+  }
+
+  restrictions {
+    geo_restriction {
+      restriction_type = "whitelist"
+      locations        = ["US"]
+    }
+  }
+
+  viewer_certificate {
+    acm_certificate_arn = aws_acm_certificate.cert.arn
+    ssl_support_method  = "sni-only"
+  }
+}
+
+resource "aws_cloudfront_origin_access_identity" "cf-static-content" {
+}
+
+resource "aws_cloudfront_distribution" "cf-static-content" {
+  origin {
+    domain_name = aws_s3_bucket.static-content-bucket.bucket_regional_domain_name
+    origin_id   = "defaultStaticContentS3Origin"
+
+    s3_origin_config {
+      origin_access_identity = aws_cloudfront_origin_access_identity.cf-static-content.cloudfront_access_identity_path
+    }
+  }
+
+  enabled             = true
+  default_root_object = "image.jpg"
+
+  aliases = ["static-content.${local.app_zone_name}", "static-content-test.${local.app_zone_name}"]
+
+  default_cache_behavior {
+    allowed_methods  = ["GET", "HEAD", "OPTIONS"]
+    cached_methods   = ["GET", "HEAD"]
+    target_origin_id = "defaultStaticContentS3Origin"
 
     forwarded_values {
       query_string = false
