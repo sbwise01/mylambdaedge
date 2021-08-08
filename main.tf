@@ -178,26 +178,6 @@ resource "aws_cloudfront_distribution" "cf-web" {
     }
   }
 
-  origin {
-    domain_name = aws_s3_bucket.brad-web-bucket.bucket_regional_domain_name
-    origin_id   = "blueWebS3Origin"
-    #origin_path = "/blue"
-
-    s3_origin_config {
-      origin_access_identity = aws_cloudfront_origin_access_identity.cf-web.cloudfront_access_identity_path
-    }
-  }
-
-  origin {
-    domain_name = aws_s3_bucket.brad-web-bucket.bucket_regional_domain_name
-    origin_id   = "greenWebS3Origin"
-    #origin_path = "/green"
-
-    s3_origin_config {
-      origin_access_identity = aws_cloudfront_origin_access_identity.cf-web.cloudfront_access_identity_path
-    }
-  }
-
   enabled             = true
   default_root_object = "index.html"
 
