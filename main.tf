@@ -113,10 +113,8 @@ resource "aws_s3_bucket_object" "default-index-page" {
   acl           = "public-read"
   force_destroy = true
   key           = "index.html"
-  source        = "files/web/index.html"
+  content       = templatefile("files/web/index.html", { buckets_prefix = local.buckets_prefix })
   content_type  = "text/html"
-
-  etag = filemd5("files/web/index.html")
 }
 
 resource "aws_s3_bucket_object" "blue-index-page" {
@@ -124,10 +122,8 @@ resource "aws_s3_bucket_object" "blue-index-page" {
   acl           = "public-read"
   force_destroy = true
   key           = "blue/index.html"
-  source        = "files/web/blue/index.html"
+  content       = templatefile("files/web/blue/index.html", { buckets_prefix = local.buckets_prefix })
   content_type  = "text/html"
-
-  etag = filemd5("files/web/blue/index.html")
 }
 
 resource "aws_s3_bucket_object" "green-index-page" {
@@ -135,10 +131,8 @@ resource "aws_s3_bucket_object" "green-index-page" {
   acl           = "public-read"
   force_destroy = true
   key           = "green/index.html"
-  source        = "files/web/green/index.html"
+  content       = templatefile("files/web/green/index.html", { buckets_prefix = local.buckets_prefix })
   content_type  = "text/html"
-
-  etag = filemd5("files/web/green/index.html")
 }
 
 resource "aws_s3_bucket" "static-content-bucket" {
