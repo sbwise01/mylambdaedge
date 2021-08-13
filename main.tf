@@ -24,6 +24,8 @@ locals {
   buckets_prefix     = "brad"
 }
 
+data "aws_caller_identity" "current" {}
+
 resource "aws_route53_zone" "parent_zone" {
   name              = local.parent_domain_name
   delegation_set_id = "N03386422VXZJKGR4YO18"
@@ -201,9 +203,11 @@ resource "aws_s3_bucket_object" "green-image" {
 }
 
 resource "aws_cloudfront_origin_access_identity" "cf-web" {
+  provider = aws.us-east-1
 }
 
 resource "aws_cloudfront_distribution" "cf-web" {
+  provider = aws.us-east-1
   origin {
     domain_name = aws_s3_bucket.web-bucket.bucket_regional_domain_name
     origin_id   = "defaultWebS3Origin"
@@ -266,9 +270,11 @@ resource "aws_cloudfront_distribution" "cf-web" {
 }
 
 resource "aws_cloudfront_origin_access_identity" "cf-static-content" {
+  provider = aws.us-east-1
 }
 
 resource "aws_cloudfront_distribution" "cf-static-content" {
+  provider = aws.us-east-1
   origin {
     domain_name = aws_s3_bucket.static-content-bucket.bucket_regional_domain_name
     origin_id   = "defaultStaticContentS3Origin"
@@ -344,43 +350,60 @@ data "aws_iam_policy_document" "lambda-assume-role-policy" {
   }
 }
 
-data "aws_iam_policy_document" "lambda-execution-policy" {
+data "aws_iam_policy_document" "blue-green-viewer-request-edge-lambda-execution-policy" {
   statement {
-    sid    = "CloudwatchLogs"
+    sid    = "EdgeLogsAllRegions"
     effect = "Allow"
     actions = [
-      "logs:CreateLogGroup",
       "logs:CreateLogStream",
-      "logs:PutLogEvents"
+      "logs:PutLogEvents",
+      "logs:CreateLogGroup"
     ]
+    # Note: Lambda@Edge creates log groups, streams, and events in the region closest to the user (i.e. the edge)
     resources = ["*"]
   }
   statement {
-    sid    = "EdgeCloudfront"
-    effect = "Allow"
-    actions = [
-      "lambda:GetFunction",
-      "lambda:EnableReplication*",
-      "iam:CreateServiceLinkedRole",
-      "cloudfront:UpdateDistribution "
+    sid       = "EdgeGetFunction"
+    effect    = "Allow"
+    actions   = ["lambda:GetFunction"]
+    resources = ["arn:aws:lambda:us-east-1:${data.aws_caller_identity.current.account_id}:function:blue-green-viewer-request-edge:*"]
+  }
+  statement {
+    sid       = "EdgeFunctionReplication"
+    effect    = "Allow"
+    actions   = ["lambda:EnableReplication*"]
+    resources = ["arn:aws:lambda:us-east-1:${data.aws_caller_identity.current.account_id}:function:blue-green-viewer-request-edge"]
+  }
+  statement {
+    sid     = "EdgeServiceLinkedRole"
+    effect  = "Allow"
+    actions = ["iam:CreateServiceLinkedRole"]
+    resources = [
+      "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/aws-service-role/replicator.lambda.amazonaws.com/AWSServiceRoleForLambdaReplicator",
+      "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/aws-service-role/logger.cloudfront.amazonaws.com/AWSServiceRoleForCloudFrontLogger"
     ]
+  }
+  statement {
+    sid       = "EdgeCloudfrontUpdate"
+    effect    = "Allow"
+    actions   = ["cloudfront:UpdateDistribution"]
     resources = ["*"]
   }
 }
 
-resource "aws_iam_policy" "lambda-execution-policy" {
-  name   = "lambda-execution-policy"
-  policy = data.aws_iam_policy_document.lambda-execution-policy.json
+resource "aws_iam_policy" "blue-green-viewer-request-edge-lambda-execution-policy" {
+  name   = "blue-green-viewer-request-edge-lambda-execution-policy"
+  policy = data.aws_iam_policy_document.blue-green-viewer-request-edge-lambda-execution-policy.json
 }
 
-resource "aws_iam_role" "blue-green-edge-lambdas" {
-  name               = "blue-green-edge-lambdas"
+resource "aws_iam_role" "blue-green-viewer-request-edge-lambda-execution" {
+  name               = "blue-green-viewer-request-edge-lambda-execution"
   assume_role_policy = data.aws_iam_policy_document.lambda-assume-role-policy.json
 }
 
 resource "aws_iam_role_policy_attachment" "blue-green-viewer-request-edge-lambda-cloudwatch" {
-  role       = aws_iam_role.blue-green-edge-lambdas.name
-  policy_arn = aws_iam_policy.lambda-execution-policy.arn
+  role       = aws_iam_role.blue-green-viewer-request-edge-lambda-execution.name
+  policy_arn = aws_iam_policy.blue-green-viewer-request-edge-lambda-execution-policy.arn
 }
 
 data "archive_file" "blue-green-viewer-request-edge-lambda" {
@@ -392,12 +415,68 @@ data "archive_file" "blue-green-viewer-request-edge-lambda" {
 resource "aws_lambda_function" "blue-green-viewer-request-edge" {
   provider         = aws.us-east-1
   function_name    = "blue-green-viewer-request-edge"
-  role             = aws_iam_role.blue-green-edge-lambdas.arn
+  role             = aws_iam_role.blue-green-viewer-request-edge-lambda-execution.arn
   handler          = "lambda.lambda_handler"
   filename         = data.archive_file.blue-green-viewer-request-edge-lambda.output_path
   source_code_hash = filebase64sha256("${data.archive_file.blue-green-viewer-request-edge-lambda.output_path}")
   runtime          = "python3.8"
   publish          = true
+}
+
+data "aws_iam_policy_document" "blue-green-origin-request-edge-lambda-execution-policy" {
+  statement {
+    sid    = "EdgeLogsAllRegions"
+    effect = "Allow"
+    actions = [
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+      "logs:CreateLogGroup"
+    ]
+    # Note: Lambda@Edge creates log groups, streams, and events in the region closest to the user (i.e. the edge)
+    resources = ["*"]
+  }
+  statement {
+    sid       = "EdgeGetFunction"
+    effect    = "Allow"
+    actions   = ["lambda:GetFunction"]
+    resources = ["arn:aws:lambda:us-east-1:${data.aws_caller_identity.current.account_id}:function:blue-green-origin-request-edge:*"]
+  }
+  statement {
+    sid       = "EdgeFunctionReplication"
+    effect    = "Allow"
+    actions   = ["lambda:EnableReplication*"]
+    resources = ["arn:aws:lambda:us-east-1:${data.aws_caller_identity.current.account_id}:function:blue-green-origin-request-edge"]
+  }
+  statement {
+    sid     = "EdgeServiceLinkedRole"
+    effect  = "Allow"
+    actions = ["iam:CreateServiceLinkedRole"]
+    resources = [
+      "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/aws-service-role/replicator.lambda.amazonaws.com/AWSServiceRoleForLambdaReplicator",
+      "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/aws-service-role/logger.cloudfront.amazonaws.com/AWSServiceRoleForCloudFrontLogger"
+    ]
+  }
+  statement {
+    sid       = "EdgeCloudfrontUpdate"
+    effect    = "Allow"
+    actions   = ["cloudfront:UpdateDistribution"]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_policy" "blue-green-origin-request-edge-lambda-execution-policy" {
+  name   = "blue-green-origin-request-edge-lambda-execution-policy"
+  policy = data.aws_iam_policy_document.blue-green-origin-request-edge-lambda-execution-policy.json
+}
+
+resource "aws_iam_role" "blue-green-origin-request-edge-lambda-execution" {
+  name               = "blue-green-origin-request-edge-lambda-execution"
+  assume_role_policy = data.aws_iam_policy_document.lambda-assume-role-policy.json
+}
+
+resource "aws_iam_role_policy_attachment" "blue-green-origin-request-edge-lambda-cloudwatch" {
+  role       = aws_iam_role.blue-green-origin-request-edge-lambda-execution.name
+  policy_arn = aws_iam_policy.blue-green-origin-request-edge-lambda-execution-policy.arn
 }
 
 data "archive_file" "blue-green-origin-request-edge-lambda" {
@@ -409,7 +488,7 @@ data "archive_file" "blue-green-origin-request-edge-lambda" {
 resource "aws_lambda_function" "blue-green-origin-request-edge" {
   provider         = aws.us-east-1
   function_name    = "blue-green-origin-request-edge"
-  role             = aws_iam_role.blue-green-edge-lambdas.arn
+  role             = aws_iam_role.blue-green-origin-request-edge-lambda-execution.arn
   handler          = "lambda.lambda_handler"
   filename         = data.archive_file.blue-green-origin-request-edge-lambda.output_path
   source_code_hash = filebase64sha256("${data.archive_file.blue-green-origin-request-edge-lambda.output_path}")
