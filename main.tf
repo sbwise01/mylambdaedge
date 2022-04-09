@@ -51,6 +51,10 @@ resource "aws_route53_record" "live-web" {
   }
 }
 
+output "live-web" {
+  value = aws_route53_record.live-web.fqdn
+}
+
 resource "aws_route53_record" "test-web" {
   zone_id = aws_route53_zone.app_zone.zone_id
   name    = "www-test"
@@ -60,6 +64,10 @@ resource "aws_route53_record" "test-web" {
     zone_id                = aws_cloudfront_distribution.cf-web.hosted_zone_id
     evaluate_target_health = true
   }
+}
+
+output "test-web" {
+  value = aws_route53_record.test-web.fqdn
 }
 
 resource "aws_route53_record" "live-static-content" {
