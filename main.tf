@@ -55,6 +55,10 @@ resource "aws_route53_record" "live-web" {
   }
 }
 
+output "live-web" {
+  value = aws_route53_record.live-web.fqdn
+}
+
 resource "aws_route53_record" "test-web" {
   zone_id = aws_route53_zone.app_zone.zone_id
   name    = "www-test"
@@ -66,26 +70,8 @@ resource "aws_route53_record" "test-web" {
   }
 }
 
-resource "aws_route53_record" "live-static-content" {
-  zone_id = aws_route53_zone.app_zone.zone_id
-  name    = "static-content"
-  type    = "A"
-  alias {
-    name                   = aws_cloudfront_distribution.cf-static-content.domain_name
-    zone_id                = aws_cloudfront_distribution.cf-static-content.hosted_zone_id
-    evaluate_target_health = true
-  }
-}
-
-resource "aws_route53_record" "test-static-content" {
-  zone_id = aws_route53_zone.app_zone.zone_id
-  name    = "static-content-test"
-  type    = "A"
-  alias {
-    name                   = aws_cloudfront_distribution.cf-static-content.domain_name
-    zone_id                = aws_cloudfront_distribution.cf-static-content.hosted_zone_id
-    evaluate_target_health = true
-  }
+output "test-web" {
+  value = aws_route53_record.test-web.fqdn
 }
 
 resource "aws_acm_certificate" "cert" {
@@ -141,6 +127,18 @@ resource "aws_s3_bucket_object" "default-index-page" {
   content_type  = "text/html"
 }
 
+resource "aws_s3_bucket_object" "default-image" {
+  bucket        = aws_s3_bucket.web-bucket.id
+  acl           = "public-read"
+  force_destroy = true
+  key           = "image.jpg"
+  source        = "files/web/images/image.jpg"
+  content_type  = "image/jpeg"
+
+  etag = filemd5("files/web/images/image.jpg")
+}
+
+
 resource "aws_s3_bucket_object" "blue-index-page" {
   bucket        = aws_s3_bucket.web-bucket.id
   acl           = "public-read"
@@ -148,6 +146,17 @@ resource "aws_s3_bucket_object" "blue-index-page" {
   key           = "blue/index.html"
   content       = templatefile("files/web/blue/index.html", { static_content_domain = "static-content.${local.app_zone_name}" })
   content_type  = "text/html"
+}
+
+resource "aws_s3_bucket_object" "blue-image" {
+  bucket        = aws_s3_bucket.web-bucket.id
+  acl           = "public-read"
+  force_destroy = true
+  key           = "blue/images/image.jpg"
+  source        = "files/web/blue/images/image.jpg"
+  content_type  = "image/jpeg"
+
+  etag = filemd5("files/web/blue/images/image.jpg")
 }
 
 resource "aws_s3_bucket_object" "green-index-page" {
@@ -159,47 +168,15 @@ resource "aws_s3_bucket_object" "green-index-page" {
   content_type  = "text/html"
 }
 
-resource "aws_s3_bucket" "static-content-bucket" {
-  bucket        = "${local.buckets_prefix}-static-content-bucket"
-  acl           = "public-read"
-  force_destroy = true
-  website {
-    error_document = "error.html"
-    index_document = "index.html"
-  }
-}
-
-resource "aws_s3_bucket_object" "default-image" {
-  bucket        = aws_s3_bucket.static-content-bucket.id
-  acl           = "public-read"
-  force_destroy = true
-  key           = "image.jpg"
-  source        = "files/static_content/image.jpg"
-  content_type  = "image/jpeg"
-
-  etag = filemd5("files/static_content/image.jpg")
-}
-
-resource "aws_s3_bucket_object" "blue-image" {
-  bucket        = aws_s3_bucket.static-content-bucket.id
-  acl           = "public-read"
-  force_destroy = true
-  key           = "blue/image.jpg"
-  source        = "files/static_content/blue/image.jpg"
-  content_type  = "image/jpeg"
-
-  etag = filemd5("files/static_content/blue/image.jpg")
-}
-
 resource "aws_s3_bucket_object" "green-image" {
-  bucket        = aws_s3_bucket.static-content-bucket.id
+  bucket        = aws_s3_bucket.web-bucket.id
   acl           = "public-read"
   force_destroy = true
-  key           = "green/image.jpg"
-  source        = "files/static_content/green/image.jpg"
+  key           = "green/images/image.jpg"
+  source        = "files/web/green/images/image.jpg"
   content_type  = "image/jpeg"
 
-  etag = filemd5("files/static_content/green/image.jpg")
+  etag = filemd5("files/web/green/images/image.jpg")
 }
 
 resource "aws_cloudfront_origin_access_identity" "cf-web" {
@@ -226,73 +203,6 @@ resource "aws_cloudfront_distribution" "cf-web" {
     allowed_methods  = ["GET", "HEAD", "OPTIONS"]
     cached_methods   = ["GET", "HEAD"]
     target_origin_id = "defaultWebS3Origin"
-
-    forwarded_values {
-      query_string = false
-      headers      = ["x-blue-green-context"]
-      cookies {
-        forward = "none"
-      }
-    }
-
-    min_ttl                = 0
-    default_ttl            = 3600
-    max_ttl                = 86400
-    viewer_protocol_policy = "allow-all"
-
-    # Note when using lambda functions on the edge like this, Terraform will fail
-    # to remove them until a few hours after the Cloudfront or associations are
-    # deleted.  See https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/lambda-edge-delete-replicas.html
-    lambda_function_association {
-      event_type   = "viewer-request"
-      lambda_arn   = aws_lambda_function.blue-green-viewer-request-edge.qualified_arn
-      include_body = false
-    }
-
-    lambda_function_association {
-      event_type   = "origin-request"
-      lambda_arn   = aws_lambda_function.blue-green-origin-request-edge.qualified_arn
-      include_body = false
-    }
-  }
-
-  restrictions {
-    geo_restriction {
-      restriction_type = "whitelist"
-      locations        = ["US"]
-    }
-  }
-
-  viewer_certificate {
-    acm_certificate_arn = aws_acm_certificate.cert.arn
-    ssl_support_method  = "sni-only"
-  }
-}
-
-resource "aws_cloudfront_origin_access_identity" "cf-static-content" {
-  provider = aws.us-east-1
-}
-
-resource "aws_cloudfront_distribution" "cf-static-content" {
-  provider = aws.us-east-1
-  origin {
-    domain_name = aws_s3_bucket.static-content-bucket.bucket_regional_domain_name
-    origin_id   = "defaultStaticContentS3Origin"
-
-    s3_origin_config {
-      origin_access_identity = aws_cloudfront_origin_access_identity.cf-static-content.cloudfront_access_identity_path
-    }
-  }
-
-  enabled             = true
-  default_root_object = "image.jpg"
-
-  aliases = ["static-content.${local.app_zone_name}", "static-content-test.${local.app_zone_name}"]
-
-  default_cache_behavior {
-    allowed_methods  = ["GET", "HEAD", "OPTIONS"]
-    cached_methods   = ["GET", "HEAD"]
-    target_origin_id = "defaultStaticContentS3Origin"
 
     forwarded_values {
       query_string = false
